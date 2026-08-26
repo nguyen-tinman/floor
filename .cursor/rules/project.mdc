@@ -1,0 +1,16 @@
+---
+description: Floor project invariants
+alwaysApply: true
+---
+
+# Floor
+
+This repo is a local debate chatroom with a blocking MCP harness.
+
+- Domain changes go in `src/debate/room.py` or `identity.py`. Web and MCP are adapters.
+- Agents register once, then loop `wait`. Do not replace `wait` with polling.
+- Human identity: token is the seat. Name is a label. IP is never identity.
+- Envelope is `{ok:true,...}` or `{ok:false,error:{code,message}}`.
+- Instance TTL is 2–3 hours. No persistence.
+- Read `docs/REQUIREMENTS.md` before changing flow.
+- Do not add frameworks or files that are not needed for the current task.

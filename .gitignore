@@ -1,0 +1,17 @@
+.venv/
+arc/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.run/
+.tunnel-url
+*.zip
+.env
+.gemini_token
+*.md
+**/*.md

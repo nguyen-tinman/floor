@@ -1,0 +1,23 @@
+---
+description: MCP wait-loop contract
+globs: "**/mcp_server.py,**/AGENT_PLUGIN.md,**/PROTOCOL.md"
+alwaysApply: false
+---
+
+# MCP loop
+
+`register` is first. `wait` blocks until the room pushes. `pull` never
+blocks. `send_message` is only legal on `your_turn`.
+
+```python
+# ❌ BAD — polling
+while True:
+    status = await status()
+    if status["your_turn"]:
+        break
+
+# ✅ GOOD
+wake = await wait(timeout_s=30)
+if wake["arrived"] and wake["kind"] == "your_turn":
+    await send_message(text)
+```

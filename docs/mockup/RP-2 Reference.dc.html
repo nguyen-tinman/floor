@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Cormorant+Garamond:wght@400;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+:root{
+--rp-ink:#0e1014;--rp-ink-2:#141821;--rp-panel:#1a1f2b;--rp-panel-2:#232939;
+--rp-edge:#232939;--rp-edge-2:#2b3244;--rp-edge-3:#3a4258;
+--rp-parchment:#ece3cf;--rp-parchment-2:#c7bfa8;--rp-muted:#8a8f9f;--rp-dim:#5e6476;
+--rp-gold:#d4a94a;--rp-gold-2:#b7902f;--rp-blood:#b84a4a;--rp-sage:#7fa37a;
+--rp-sky:#6f9dc9;--rp-plum:#9c6ab3;--rp-amber:#cc9933;--rp-rust:#a63a3a;
+--rp-rail-bg:#0a0b0f;--rp-dock-bg:#0a0b0f;--rp-bg-app:#0b0c10;
+--rp-shadow:0 20px 60px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{font-family:Inter,system-ui,sans-serif;font-size:13px;
+background:radial-gradient(1200px 700px at 20% 0%,#16161f 0%,transparent 60%),radial-gradient(1000px 600px at 90% 100%,#1c1620 0%,transparent 60%),var(--rp-bg-app);
+color:var(--rp-parchment);overflow:hidden;-webkit-font-smoothing:antialiased}
+a{color:var(--rp-gold);text-decoration:none}
+a:hover{color:var(--rp-gold-2)}
+.mono{font-family:'JetBrains Mono',ui-monospace,Menlo,monospace;letter-spacing:1.5px;text-transform:uppercase}
+.serif{font-family:'Cormorant Garamond',Georgia,serif}
+.kbd{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;background:var(--rp-ink-2);border:1px solid var(--rp-edge-2);padding:1px 5px;color:var(--rp-parchment-2);border-radius:2px}
+:focus-visible{outline:2px solid var(--rp-gold);outline-offset:2px}
+.rail-btn{flex:0 0 auto;width:44px;height:44px;position:relative;display:grid;place-items:center;cursor:pointer;background:transparent;border:1px solid transparent;border-left:2px solid transparent;color:var(--rp-dim);transition:color 160ms,background 160ms}
+.rail-btn:hover{color:var(--rp-parchment-2)}
+.rail-btn[aria-current='page']{background:rgba(212,169,74,.08);border-left-color:var(--rp-gold);color:var(--rp-gold)}
+.dock-card{background:var(--rp-panel);border:1px solid var(--rp-edge);padding:11px 13px;cursor:pointer}
+.dock-card:hover{border-color:var(--rp-edge-3)}
+.dock-k{font-size:9px;letter-spacing:2px}
+.dock-t{font-family:'Cormorant Garamond',Georgia,serif;font-size:17px;color:var(--rp-parchment);line-height:1.15}
+.dock-b{font-size:11.5px;color:var(--rp-muted);margin-top:5px;line-height:1.45}
+.chat-name{font-size:10px;letter-spacing:1.5px}
+.chat-time{font-size:9px;color:var(--rp-dim);letter-spacing:1px}
+.chat-text{font-size:13px;line-height:1.55;color:var(--rp-parchment)}
+</style>
+</helmet>
+
+<div style="height:100vh;display:grid;grid-template-columns:64px 1fr 360px;grid-template-rows:52px 1fr 64px;grid-template-areas:'rail top top' 'rail focus dock' 'rail actions dock'">
+
+  <nav aria-label="Primary navigation" style="grid-area:rail;display:flex;flex-direction:column;align-items:center;gap:4px;padding:14px 0;background:var(--rp-rail-bg);border-right:1px solid var(--rp-edge);height:100%">
+    <div aria-hidden="true" title="RP-2" style="width:36px;height:36px;border:1px solid var(--rp-gold);color:var(--rp-gold);display:grid;place-items:center;font-family:'Cormorant Garamond',serif;font-size:18px;margin-bottom:20px">R</div>
+
+    <button type="button" class="rail-btn" aria-label="Character (1)" title="Character · 1" aria-current="{{ curCharacter }}" onClick="{{ goCharacter }}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.2"></circle><path d="M5 20c1.2-4 4-6 7-6s5.8 2 7 6"></path></svg>
+    </button>
+    <button type="button" class="rail-btn" aria-label="Map (2)" title="Map · 2" aria-current="{{ curMap }}" onClick="{{ goMap }}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"></path><path d="M9 4v16"></path><path d="M15 6v16"></path></svg>
+    </button>
+    <button type="button" class="rail-btn" aria-label="Story (3)" title="Story · 3" aria-current="{{ curStory }}" onClick="{{ goStory }}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 4C14 4 7 11 5 19l6-6 4 4 3-3 2 2 1-1c1-4 1-8-1-11z"></path><path d="M6 20l6-6"></path></svg>
+      <span class="mono" style="position:absolute;top:5px;right:5px;min-width:14px;height:14px;padding:0 3px;background:var(--rp-gold);color:var(--rp-ink);font-size:9px;letter-spacing:0;display:grid;place-items:center;border-radius:7px">2</span>
+    </button>
+    <button type="button" class="rail-btn" aria-label="Combat (4)" title="Combat · 4" aria-current="{{ curCombat }}" onClick="{{ goCombat }}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l4-1 11-11-2-2L5 17l-1 3z"></path><path d="M15 6l3 3"></path><path d="M8 18l-2 2"></path></svg>
+    </button>
+    <button type="button" class="rail-btn" aria-label="Quests (5)" title="Quests · 5" aria-current="{{ curQuests }}" onClick="{{ goQuests }}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h12l-2 4 2 4H5z"></path><path d="M5 4v16"></path></svg>
+    </button>
+    <button type="button" class="rail-btn" aria-label="Chat (6)" title="Chat · 6" aria-current="{{ curChat }}" onClick="{{ goChat }}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path><path d="M8 10h8"></path><path d="M8 13h5"></path></svg>
+    </button>
+    <div style="flex:1"></div>
+  </nav>
+
+  <header style="grid-area:top;display:flex;align-items:center;gap:14px;padding:0 24px;height:52px;background:rgba(14,16,20,.95);border-bottom:1px solid var(--rp-edge);font-size:12px;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:10px;min-width:0">
+      <span class="serif" style="font-size:22px;color:var(--rp-parchment);font-weight:600;flex-shrink:0">RP-2</span>
+      <span style="color:var(--rp-edge-2);font-size:18px">/</span>
+      <span class="mono" style="font-size:10px;letter-spacing:2px;color:var(--rp-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Campaign: The Ashfall Accord</span>
+    </div>
+    <div style="flex:1"></div>
+    <div class="mono" style="display:flex;align-items:center;gap:8px;color:var(--rp-parchment-2);font-size:11px;flex-shrink:0">
+      <span style="color:var(--rp-gold);display:grid;place-items:center">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.5"></circle><path d="M12 3v2"></path><path d="M12 19v2"></path><path d="M3 12h2"></path><path d="M19 12h2"></path><path d="M5.5 5.5l1.4 1.4"></path><path d="M17.1 17.1l1.4 1.4"></path></svg>
+      </span>
+      <span>Day 4 · 18:00 · <span style="color:var(--rp-muted);letter-spacing:1px">Evening</span></span>
+      <span style="color:var(--rp-edge-2)">|</span>
+      <span>Turn 27</span>
+      <span style="color:var(--rp-edge-2)">|</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--rp-edge-2);color:var(--rp-sage);font-size:10px">
+        <span style="width:6px;height:6px;border-radius:50%;background:var(--rp-sage);display:inline-block"></span>Live · 3 on
+      </span>
+    </div>
+    <button type="button" style="display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--rp-edge-2);color:var(--rp-muted);padding:5px 9px;cursor:pointer;font-size:11px" style-hover="border-color:var(--rp-edge-3);color:var(--rp-parchment-2)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l4 4"></path></svg>
+      <span class="kbd">⌘K</span>
+    </button>
+    <button type="button" aria-label="Settings" style="width:30px;height:30px;background:transparent;border:1px solid var(--rp-edge-2);color:var(--rp-muted);cursor:pointer;display:grid;place-items:center" style-hover="border-color:var(--rp-edge-3);color:var(--rp-parchment-2)">⚙</button>
+  </header>
+
+  <main aria-label="Focus pane" style="grid-area:focus;overflow:hidden;padding:24px 32px;display:flex;flex-direction:column;min-height:0">
+    <div class="mono" style="font-size:10px;letter-spacing:2.5px;color:var(--rp-dim)">Party chat</div>
+    <h1 class="serif" style="font-size:34px;font-weight:600;margin:2px 0 18px;color:var(--rp-parchment);line-height:1">The Table</h1>
+    <div style="display:flex;flex-direction:column;gap:10px;max-width:720px;overflow:auto;flex:1;min-height:0;padding-right:8px">
+
+      <div style="padding:9px 12px;border-left:2px solid var(--rp-edge-2)">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+          <span class="mono chat-name" style="color:var(--rp-parchment-2)">Player 2 · Sorrel</span>
+          <span class="mono chat-time">18:02</span>
+        </div>
+        <div class="chat-text">The fence wants payment before she talks. I say we let her name a price and haggle after.</div>
+      </div>
+
+      <div style="padding:9px 12px;border-left:2px solid var(--rp-gold);background:rgba(212,169,74,.05)">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+          <span class="mono chat-name" style="color:var(--rp-gold)">DM</span>
+          <span class="mono chat-time">18:03</span>
+        </div>
+        <div class="chat-text">Merrin leans back against the crate, thumbing the edge of a coin that is not quite the right weight.</div>
+      </div>
+
+      <div style="padding:9px 12px;border-left:2px solid var(--rp-edge-2)">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+          <span class="mono chat-name" style="color:var(--rp-parchment-2)">Player 1 · Vesk</span>
+          <span class="mono chat-time">18:04</span>
+        </div>
+        <div class="chat-text">Or I put a knife on the crate and we skip the haggling.</div>
+      </div>
+
+      <div style="padding:9px 12px;border-left:2px solid var(--rp-edge-2)">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+          <span class="mono chat-name" style="color:var(--rp-parchment-2)">Player 3 · Odaline</span>
+          <span class="mono chat-time">18:05</span>
+        </div>
+        <div class="chat-text">Nobody is putting a knife anywhere in a room with four exits and one of them ours.</div>
+      </div>
+
+      <div style="padding:9px 12px;border-left:2px solid var(--rp-plum);background:rgba(156,106,179,.05)">
+        <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+          <span class="mono chat-name" style="color:var(--rp-plum)">Merrin the Fence</span>
+          <span class="mono chat-time">18:06</span>
+        </div>
+        <div class="chat-text">Forty crowns and I forget which of you asked. Fifty and I forget you were here at all.</div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;padding:4px 12px">
+        <span class="mono" style="font-size:10px;color:var(--rp-plum);letter-spacing:1.5px">Merrin the Fence</span>
+        <span style="font-size:11px;color:var(--rp-dim)">is typing…</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px;max-width:720px">
+      <input placeholder="Say something to the table…  ( / )" aria-label="Chat message" style="flex:1;background:var(--rp-rail-bg);border:1px solid var(--rp-edge-2);color:var(--rp-parchment);padding:9px 12px;font-size:13px;font-family:Inter,sans-serif">
+      <button type="button" style="background:transparent;border:1px solid var(--rp-gold);color:var(--rp-gold);padding:9px 18px;cursor:pointer;font-size:12px" style-hover="background:rgba(212,169,74,.08)">Send</button>
+    </div>
+  </main>
+
+  <div style="grid-area:actions;border-top:1px solid var(--rp-edge);background:rgba(14,16,20,.95);display:flex;align-items:center;gap:10px;padding:0 24px">
+    <span class="mono" style="font-size:10px;color:var(--rp-dim);letter-spacing:2px">Act</span>
+    <input placeholder="Describe what you do…" aria-label="Action" style="flex:1;background:var(--rp-rail-bg);border:1px solid var(--rp-edge-2);color:var(--rp-parchment);padding:8px 12px;font-size:13px;font-family:Inter,sans-serif">
+    <button type="button" style="background:transparent;border:1px solid var(--rp-edge-2);color:var(--rp-parchment-2);padding:8px 14px;cursor:pointer;font-size:12px" style-hover="border-color:var(--rp-edge-3)">Propose</button>
+    <button type="button" style="background:rgba(212,169,74,.12);border:1px solid var(--rp-gold);color:var(--rp-gold);padding:8px 18px;cursor:pointer;font-size:12px" style-hover="background:rgba(212,169,74,.2)">Act</button>
+    <span class="mono" style="font-size:10px;color:var(--rp-dim);letter-spacing:1.5px;margin-left:6px">⏎</span>
+  </div>
+
+  <aside aria-label="Glance dock" style="grid-area:dock;background:var(--rp-dock-bg);border-left:1px solid var(--rp-edge);overflow:hidden;display:flex;flex-direction:column">
+    <div style="padding:14px 20px 10px;border-bottom:1px solid var(--rp-edge);display:flex;align-items:center;justify-content:space-between">
+      <span class="mono" style="font-size:10px;letter-spacing:2.5px;color:var(--rp-dim)">At a Glance</span>
+      <span class="mono" style="font-size:10px;color:var(--rp-dim);letter-spacing:1px">Click to focus</span>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px">
+
+      <div class="dock-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+          <span class="mono dock-k" style="color:var(--rp-gold)">Turn</span>
+          <span class="mono" style="font-size:9px;color:var(--rp-dim)">T27</span>
+        </div>
+        <div class="dock-t">Odaline to act</div>
+        <div class="dock-b">Priority window closes in 41s. Two proposals pending.</div>
+      </div>
+
+      <div class="dock-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+          <span class="mono dock-k" style="color:var(--rp-sage)">Party</span>
+          <span class="mono" style="font-size:9px;color:var(--rp-dim)">3 / 4</span>
+        </div>
+        <div class="dock-t">Three at the table</div>
+        <div class="dock-b">Vesk · Sorrel · Odaline. Player 4 offline since Day 3.</div>
+      </div>
+
+      <div class="dock-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+          <span class="mono dock-k" style="color:var(--rp-sky)">Dice</span>
+          <span class="mono" style="font-size:9px;color:var(--rp-dim)">Last</span>
+        </div>
+        <div class="dock-t">Persuasion · 2d20 = 17</div>
+        <div class="dock-b">Rolled by Sorrel against Merrin. Success by 2.</div>
+      </div>
+
+      <div class="dock-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+          <span class="mono dock-k" style="color:var(--rp-plum)">Chat</span>
+          <span class="mono" style="font-size:9px;color:var(--rp-dim)">5 new</span>
+        </div>
+        <div class="dock-t">The Table</div>
+        <div class="dock-b">Merrin the Fence is typing…</div>
+      </div>
+
+      <div class="dock-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+          <span class="mono dock-k" style="color:var(--rp-amber)">Quests</span>
+          <span class="mono" style="font-size:9px;color:var(--rp-dim)">2 open</span>
+        </div>
+        <div class="dock-t">The Ashfall Accord</div>
+        <div class="dock-b">Objective 2 of 4 complete — find the courier.</div>
+      </div>
+    </div>
+  </aside>
+
+  <sc-if value="{{ showLogin }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;display:grid;place-items:center;background:var(--rp-bg-app);z-index:50">
+      <div style="width:360px;padding:32px;background:var(--rp-ink-2);border:1px solid var(--rp-edge);box-shadow:var(--rp-shadow)">
+        <div class="mono" style="color:var(--rp-gold);letter-spacing:3px;font-size:11px;margin-bottom:12px">RP-2 · Sign in</div>
+        <div class="serif" style="font-size:36px;color:var(--rp-parchment);line-height:.95;margin-bottom:18px">Enter the table.</div>
+        <input type="password" placeholder="Password" aria-label="Campaign password" style="width:100%;background:var(--rp-rail-bg);border:1px solid var(--rp-edge-2);color:var(--rp-parchment);padding:10px 12px;font-size:14px;font-family:Inter,sans-serif;margin-bottom:12px">
+        <button type="button" onClick="{{ dismissLogin }}" style="width:100%;background:rgba(212,169,74,.12);border:1px solid var(--rp-gold);color:var(--rp-gold);padding:10px;cursor:pointer;font-size:13px;font-family:Inter,sans-serif" style-hover="background:rgba(212,169,74,.2)">Sign in</button>
+        <div class="mono" style="font-size:9px;color:var(--rp-dim);letter-spacing:1.5px;margin-top:14px;line-height:1.7">Session token → localStorage · WS /ws auth frame → slot + label</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <button type="button" onClick="{{ toggleLogin }}" class="mono" style="position:fixed;bottom:76px;right:376px;z-index:40;background:var(--rp-ink-2);border:1px solid var(--rp-edge-2);color:var(--rp-dim);font-size:9px;letter-spacing:1.5px;padding:5px 9px;cursor:pointer" style-hover="color:var(--rp-parchment-2);border-color:var(--rp-edge-3)">Show login gate</button>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { showLogin: false, focus: 'chat' };
+
+  cur(id) { return this.state.focus === id ? 'page' : undefined; }
+  go(id) { return () => this.setState({ focus: id }); }
+
+  renderVals() {
+    return {
+      showLogin: this.state.showLogin,
+      toggleLogin: () => this.setState({ showLogin: true }),
+      dismissLogin: () => this.setState({ showLogin: false }),
+      curCharacter: this.cur('character'), goCharacter: this.go('character'),
+      curMap: this.cur('map'), goMap: this.go('map'),
+      curStory: this.cur('story'), goStory: this.go('story'),
+      curCombat: this.cur('combat'), goCombat: this.go('combat'),
+      curQuests: this.cur('quests'), goQuests: this.go('quests'),
+      curChat: this.cur('chat'), goChat: this.go('chat'),
+    };
+  }
+}
+</script>
+</body>
+</html>

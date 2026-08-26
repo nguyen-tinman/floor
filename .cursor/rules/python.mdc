@@ -1,0 +1,20 @@
+---
+description: Python conventions for Floor
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python
+
+- Pytest first for room and identity behavior. Watch the test fail.
+- Inject clocks and waiters. Do not sleep in unit tests.
+- Public functions return dicts that already match the protocol, or raise `FloorError(code, message)` that adapters turn into the envelope.
+- No new dependencies without updating `pyproject.toml` and a test that needs them.
+
+```python
+# ❌ BAD
+time.sleep(30)
+
+# ✅ GOOD
+await waiter.wait(timeout=clock.timeout(30))
+```
