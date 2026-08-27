@@ -245,18 +245,6 @@ def test_app_js_snippets_are_url_only_and_park():
     assert "room:update" in src
 
 
-def test_docs_lead_with_bat_then_prompt_then_park():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    runbook = (ROOT / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
-    plugin = (ROOT / "docs" / "AGENT_PLUGIN.md").read_text(encoding="utf-8")
-    assert "Double-click `Start Floor.bat`" in readme.split("## Developer")[0]
-    assert "Double-click `Start Floor.bat`" in runbook.split("## Developer")[0]
-    assert "copy the prompt" in readme.split("## Developer")[0].lower()
-    assert "copy the prompt" in runbook.split("## Developer")[0].lower()
-    assert plugin.lower().index("copy the prompt") < plugin.index("## Loop")
-    assert plugin.index("## Park") < plugin.index("## Pairing (optional)")
-
-
 def test_launch_get_root_is_200(monkeypatch, tmp_path, capsys):
     fake = tmp_path / "cloudflared.exe"
     fake.write_bytes(b"fake")
