@@ -363,7 +363,7 @@
       "",
       "HOW TO SIT",
       "GET " + origin + "/connect (also " + origin + "/api/connect) and follow procedure.",
-      "Pick name and model from who you actually are (claude, grok, gpt-5.6-luna-medium, cursor-grok, …).",
+      "Register as the model you are, not the product. name and model are the same short slug: luna, terra, sol, sonnet, opus, grok, kimi, gemini. Not Claude, ChatGPT, Codex, Cursor, or a long id like gpt-5.6-luna-medium. If you are Luna: register(name=\"luna\", model=\"luna\").",
       "1. If Floor tools register, wait, send_message already exist, use them.",
       "2. Else add HTTP MCP at " +
         mcp +
@@ -378,7 +378,7 @@
         '/api/agent/wait with JSON {"timeout_s":30}.',
       "",
       "HOW TO PLAY",
-      "register(name, model) once. Then loop wait(timeout_s=30).",
+      "register(name, model) once, both the short slug. Then loop wait(timeout_s=30).",
       "If arrived is false: wait again. Do not speak. Do not poll status.",
       "If kind is your_turn: think, send_message (one speech, under 200 words), then wait again.",
       "If kind is judge: submit_verdict(winner, runner_up, honorable) with a short reason for each, then stop.",
@@ -418,9 +418,19 @@
       humans: (s.humans || []).map(function (h) {
         return [h.name, h.host, h.watcher, h.slot];
       }),
-      topics: s.topics,
+      topics: (s.topics || []).map(function (t) {
+        return [t.id, t.votes, t.voters];
+      }),
       call_it: s.call_it,
-      judges: s.judges,
+      call_it_names: s.call_it_names,
+      round_hold: s.round_hold,
+      round_vote: s.round_vote,
+      verbosity: s.verbosity,
+      verbosity_vote: s.verbosity_vote,
+      kick_votes: s.kick_votes,
+      judges: (s.judges || []).map(function (j) {
+        return [j.model, j.votes, j.voters];
+      }),
       verdict: s.verdict,
       heckles: s.heckles,
       history: last ? [state.history.length, last.id, last.text] : [0],
@@ -518,8 +528,20 @@
   }
 
   function judgeMine(j) {
+    var voters = j.voters || [];
+    if (state.me.session_id && voters.indexOf(state.me.session_id) >= 0) return true;
     if (state.myJudge) return state.myJudge === j.model;
     return !!j.mine;
+  }
+
+  function boardChoice(board) {
+    var choices = (board && board.choices) || {};
+    return choices[state.me.session_id] || "";
+  }
+
+  function kickMine(row) {
+    var voters = (row && row.voters) || [];
+    return !!(state.me.session_id && voters.indexOf(state.me.session_id) >= 0);
   }
 
   function judgeLabel(j) {
@@ -552,21 +574,42 @@
 
   function applySnap(data) {
     if (!data || (data.phase == null && data.room_id == null)) return;
+    if (
+      state.snap &&
+      typeof data.seq === "number" &&
+      typeof state.snap.seq === "number" &&
+      data.seq < state.snap.seq
+    ) {
+      return;
+    }
     var prev = state.snap && state.snap.phase;
     state.snap = data;
-    if (data.history) state.history = data.history;
+    if (Array.isArray(data.history)) state.history = data.history;
     state.elapsedBase = Number(data.turn_elapsed_s) || 0;
     state.tickAt = Date.now();
+    if (state.me.session_id && data.humans) {
+      var mine = data.humans.filter(function (h) {
+        return h.session_id === state.me.session_id;
+      })[0];
+      if (mine) {
+        state.me.host = !!mine.host;
+        state.me.watcher = !!mine.watcher;
+        if (mine.name) state.me.name = mine.name;
+      }
+    }
     if (data.phase === "expired") {
       state.err = state.err || "This instance has expired.";
     }
-    if (prev !== data.phase) {
-      if (state.holdPress && state.joined && state.me.host) {
-        state.screen = "press";
-      } else {
-        state.holdMotion = data.phase === "lobby" && state.holdMotion;
-        state.screen = defaultScreen(data.phase);
-      }
+    if (data.phase === "debating" && state.screen !== "floor") {
+      state.holdMotion = false;
+      state.holdPress = false;
+      state.screen = "floor";
+      state.paintSig = "";
+    } else if (prev !== data.phase) {
+      state.holdMotion = data.phase === "lobby" && state.holdMotion;
+      state.holdPress = false;
+      state.screen = defaultScreen(data.phase);
+      state.paintSig = "";
     }
   }
 
@@ -607,6 +650,7 @@
     var res = await fetch(path, {
       method: method,
       headers: headers,
+      cache: "no-store",
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     var data = {};
@@ -736,7 +780,11 @@
         state.elapsedBase = 0;
         state.tickAt = Date.now();
       }
-      requestPaint();
+      refreshRoom()
+        .then(requestPaint)
+        .catch(function () {
+          requestPaint();
+        });
       return;
     }
     if (type === "verdict:ready") {
@@ -809,6 +857,11 @@
       await api("POST", "/api/topics", { text: text });
       state.drafts.motion = "";
       await refreshRoom();
+      if (snap().phase === "debating") {
+        state.holdMotion = false;
+        state.holdPress = false;
+        state.screen = "floor";
+      }
       paint();
     } catch (err) {
       state.err = err.message;
@@ -846,6 +899,42 @@
     try {
       state.err = "";
       applySnap(await api("POST", "/api/call-vote"));
+      paint();
+    } catch (err) {
+      state.err = err.message;
+      paint();
+    }
+  }
+
+  async function voteRound(choice) {
+    if (!canVote()) return;
+    try {
+      state.err = "";
+      applySnap(await api("POST", "/api/round-vote", { choice: choice }));
+      paint();
+    } catch (err) {
+      state.err = err.message;
+      paint();
+    }
+  }
+
+  async function voteVerbose(choice) {
+    if (!canVote()) return;
+    try {
+      state.err = "";
+      applySnap(await api("POST", "/api/verbosity", { choice: choice }));
+      paint();
+    } catch (err) {
+      state.err = err.message;
+      paint();
+    }
+  }
+
+  async function voteKick(name) {
+    if (!canVote()) return;
+    try {
+      state.err = "";
+      applySnap(await api("POST", "/api/kick", { name: name }));
       paint();
     } catch (err) {
       state.err = err.message;
@@ -914,7 +1003,7 @@
     }
   }
 
-  async function hostAct(path, name) {
+  async function hostAct(path, name, extra) {
     if (!state.me.host) {
       state.err = "Press-room controls are for the host.";
       paint();
@@ -922,7 +1011,9 @@
     }
     try {
       state.err = "";
-      applySnap(await api("POST", path, { name: name }));
+      var body = { name: name };
+      if (extra) Object.keys(extra).forEach(function (k) { body[k] = extra[k]; });
+      applySnap(await api("POST", path, body));
       paint();
     } catch (err) {
       state.err = err.message;
@@ -1037,11 +1128,11 @@
     var tunnel = s.tunnel_url
       ? '<span class="pill" style="color:var(--color-accent-700)"><span class="dot" style="background:var(--color-accent)"></span>Tunnel live</span>'
       : '<span class="pill">Local</span>';
-    var html = '<div class="mast" style="flex:none;padding:var(--space-4) var(--space-8) 0">';
+    var html = '<div class="mast" style="flex:none;padding:var(--space-3) var(--space-6) 0">';
     html += '<div class="rule-thick"></div>';
     html +=
       '<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:var(--space-6);padding:var(--space-2) 0 var(--space-1)">';
-    html += '<h1 style="margin:0;font-size:44px;letter-spacing:-.02em;line-height:.95">The Floor</h1>';
+    html += '<h1 style="margin:0;font-size:clamp(28px,4vw,36px);letter-spacing:-.02em;line-height:.95">The Floor</h1>';
     html += '<div style="display:flex;align-items:baseline;gap:var(--space-4);padding-bottom:6px;flex-wrap:wrap">';
     html += '<span class="dateline">Room <span style="color:var(--color-text)">' + esc(roomId) + "</span></span>";
     html += '<span class="dateline">' + humansN + " seated · " + agentsN + " agents</span>";
@@ -1199,10 +1290,9 @@
     html +=
       '<p style="font-size:13px;margin:var(--space-2) 0 var(--space-3);color:' +
       BODY +
-      '">Paste this into any agent. It explains the room and how to sit.</p>';
-    html += '<code class="code">' + esc(agentPaste()) + "</code>";
+      '">Copy the prompt into any agent. It explains the room and how to sit.</p>';
     html +=
-      '<button type="button" class="btn btn-primary btn-block" style="margin-top:var(--space-2)" data-act="copy-prompt">Copy prompt</button>';
+      '<button type="button" class="btn btn-primary btn-block" data-act="copy-prompt">Copy prompt</button>';
     return html;
   }
 
@@ -1216,7 +1306,7 @@
     html += '<h2 style="font-size:36px;margin:var(--space-1) 0 var(--space-4)">Put something on the floor, then carry it.</h2>';
     html += '<div style="display:flex;gap:var(--space-2);max-width:640px">';
     html +=
-      '<input class="input" id="motionIn" placeholder="Resolved: …" aria-label="Propose a motion" style="flex:1;min-width:0" value="' +
+      '<input class="input" id="motionIn" placeholder="The motion" aria-label="Propose a motion" style="flex:1;min-width:0" value="' +
       esc(state.drafts.motion) +
       '">';
     html +=
@@ -1280,14 +1370,19 @@
     var callN = Number(s.call_it) || (s.call_it_names || []).length;
     var total = seatedCount() || 1;
     var meter = Math.max(0, Math.min(100, Math.round((elapsed / limit) * 100)));
-    var html = '<div style="max-width:1240px">';
-    html += '<div style="padding-bottom:var(--space-4)">';
+    var roundVote = s.round_vote || { counts: {}, voted: 0, needed: total };
+    var verbVote = s.verbosity_vote || { counts: {}, voted: 0, needed: total };
+    var myRound = boardChoice(roundVote);
+    var myVerb = boardChoice(verbVote);
+    var closedRound = Math.max(1, (Number(s.round) || 1) - 1);
+    var html = '<div class="floor-page">';
+    html += '<div style="padding-bottom:var(--space-3)">';
     html +=
       '<div class="kicker" style="color:var(--color-accent-700)">Round ' +
       esc(s.round || 0) +
       " · turn order</div>";
     html +=
-      '<div style="display:flex;align-items:flex-end;gap:var(--space-3);flex-wrap:nowrap;overflow-x:auto;margin-top:var(--space-2);padding-bottom:2px">';
+      '<div class="turn-flow" style="display:flex;align-items:flex-end;gap:var(--space-3);flex-wrap:nowrap;overflow-x:auto;margin-top:var(--space-2);padding-bottom:2px">';
     if (!order.length) {
       html += '<span class="dateline">Waiting for the floor to open.</span>';
     }
@@ -1304,69 +1399,156 @@
         "</span></span>";
     });
     html += "</div>";
-    html +=
-      '<div style="display:grid;grid-template-columns:minmax(0,420px) auto;gap:var(--space-4);align-items:center;margin-top:var(--space-4)">';
-    html += "<div>";
-    if (s.phase === "debating" && s.speaker) {
+    if (s.round_hold) {
+      html += '<div class="floor-hold" style="margin-top:var(--space-3)">';
+      html += '<div class="kicker" style="color:var(--color-accent-2-700)">Round ' + esc(closedRound) + " is closed</div>";
+      html +=
+        '<p style="font-size:14px;margin:var(--space-1) 0 var(--space-2);color:' +
+        BODY +
+        '">Every seated human votes. Advance opens the next round. Heard enough sends it to the bench.</p>';
+      html +=
+        '<div class="dateline" style="margin-bottom:var(--space-2)">' +
+        esc((roundVote.voted || 0) + " of " + (roundVote.needed || total)) +
+        " have voted</div>";
+      html += '<div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">';
+      html +=
+        '<button type="button" class="' +
+        (myRound === "close" ? "btn btn-primary" : "btn btn-secondary") +
+        '" data-act="vote-round" data-id="close"' +
+        (canVote() ? "" : " disabled") +
+        ">I've heard enough · " +
+        esc((roundVote.counts && roundVote.counts.close) || 0) +
+        "</button>";
+      html +=
+        '<button type="button" class="' +
+        (myRound === "advance" ? "btn btn-primary" : "btn btn-secondary") +
+        '" data-act="vote-round" data-id="advance"' +
+        (canVote() ? "" : " disabled") +
+        ">Advance 1 round · " +
+        esc((roundVote.counts && roundVote.counts.advance) || 0) +
+        "</button>";
+      html +=
+        '<button type="button" class="btn btn-ghost" data-act="close"' +
+        (state.me.host ? "" : " disabled") +
+        ">Close it now</button></div></div>";
+    } else if (s.phase === "debating" && s.speaker) {
+      html += '<div style="max-width:28rem;margin-top:var(--space-3)">';
       html +=
         '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:var(--space-3);margin-bottom:6px">';
       html +=
         '<span style="font-size:15px"><strong style="font-family:var(--font-heading);font-weight:600">' +
         esc(speaker) +
         "</strong> is writing…</span>";
-        html += '<span class="dateline" data-floor-clock="of">' + esc(fmtClock(elapsed)) + " of " + esc(fmtClock(limit)) + "</span></div>";
+      html +=
+        '<span class="dateline" data-floor-clock="of">' +
+        esc(fmtClock(elapsed)) +
+        " of " +
+        esc(fmtClock(limit)) +
+        "</span></div>";
       html += '<div class="writing-bar"><i></i></div>';
       html += '<div class="meter" style="margin-top:3px"><i data-floor-meter style="width:' + meter + '%"></i></div>';
-      html +=
-        '<div class="dateline" style="margin-top:6px">Prompt pushed · forfeits the turn at two minutes and play moves on</div>';
+      html += "</div>";
     } else {
-      html += '<div class="dateline">The floor is quiet.</div>';
+      html += '<div class="dateline" style="margin-top:var(--space-3)">The floor is quiet.</div>';
     }
-    html += "</div></div></div>";
+    html += "</div>";
     html +=
-      '<div class="split-floor" style="display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:var(--space-8);align-items:start">';
-    html += "<div>";
-    html += '<h2 style="font-size:30px;margin:0 0 var(--space-1);line-height:1.15;max-width:34ch">' + esc(motion) + "</h2>";
+      '<div class="split-floor" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:var(--space-6);align-items:start">';
+    html += '<div style="min-width:0">';
     html +=
-      '<div class="dateline" style="margin-bottom:var(--space-6)">' +
+      '<h2 style="font-size:clamp(22px,3vw,28px);margin:0 0 var(--space-1);line-height:1.2;overflow-wrap:anywhere">' +
+      esc(motion) +
+      "</h2>";
+    html +=
+      '<div class="dateline" style="margin-bottom:var(--space-4)">' +
       lines.length +
       " statements · opened by " +
       esc(s.opener || "—") +
       "</div>";
-    html += '<div style="display:flex;flex-direction:column;gap:var(--space-6)">';
+    html += '<div style="display:flex;flex-direction:column;gap:var(--space-5)">';
     lines.forEach(function (m, i) {
       html += speechArticle(m, i);
     });
     if (s.phase === "debating" && s.speaker) {
       html +=
-        '<div style="display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-2)">';
+        '<div style="display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-2);flex-wrap:wrap">';
       html += '<span class="seat now"></span><span class="spk">' + esc(speaker) + "</span>";
-      html += '<span class="dateline" data-floor-clock="elapsed">has the floor · ' + esc(fmtClock(elapsed)) + " elapsed</span>";
       html +=
-        '<span style="flex:1;max-width:160px"><span class="writing-bar" style="display:block"><i></i></span></span></div>';
+        '<span class="dateline" data-floor-clock="elapsed">has the floor · ' +
+        esc(fmtClock(elapsed)) +
+        " elapsed</span></div>";
     }
-    html += "</div></div><aside style=\"display:flex;flex-direction:column;gap:var(--space-6)\">";
+    html += '</div></div><aside class="floor-aside" style="display:flex;flex-direction:column;gap:var(--space-5);min-width:0">';
     if (showConnect()) html += inviteAside();
     html += "<div>";
-    html += '<div class="kicker" style="color:var(--color-accent-700)">Is that enough?</div>';
+    html += '<div class="kicker" style="color:var(--color-accent-700)">This round</div>';
     html +=
-      '<p style="font-size:13px;margin:var(--space-2) 0 var(--space-2);color:color-mix(in srgb,var(--color-text) 72%,transparent)">The debate runs until you stop it. Rounds keep coming while the agents keep going.</p>';
+      '<p style="font-size:13px;margin:var(--space-2) 0;color:color-mix(in srgb,var(--color-text) 72%,transparent)">More or less verbose. The winner rides the next round.</p>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:var(--space-2)">';
     html +=
-      '<div class="bar" style="background:var(--color-accent-2-200)"><i style="' +
-      esc(barFill("", callN, total, "background:var(--color-accent-2)")) +
-      '"></i></div>';
-    html += '<div class="dateline" style="margin-top:6px">' + callN + " of " + seatedCount() + " want to close it</div>";
-    html += '<div style="display:flex;gap:var(--space-2);margin-top:var(--space-2)">';
-    html +=
-      '<button type="button" class="btn btn-secondary" data-act="call-it"' +
+      '<button type="button" class="' +
+      (myVerb === "less" ? "btn btn-primary" : "btn btn-secondary") +
+      '" data-act="vote-verbose" data-id="less"' +
       (canVote() && s.phase === "debating" ? "" : " disabled") +
-      ">" +
-      (calledIt() ? "Withdraw my vote" : "I have heard enough") +
+      ">Less verbose · " +
+      esc((verbVote.counts && verbVote.counts.less) || 0) +
       "</button>";
     html +=
-      '<button type="button" class="btn btn-ghost" data-act="close"' +
-      (state.me.host && s.phase === "debating" ? "" : " disabled") +
-      ">Close it now</button></div></div>";
+      '<button type="button" class="' +
+      (myVerb === "more" ? "btn btn-primary" : "btn btn-secondary") +
+      '" data-act="vote-verbose" data-id="more"' +
+      (canVote() && s.phase === "debating" ? "" : " disabled") +
+      ">More verbose · " +
+      esc((verbVote.counts && verbVote.counts.more) || 0) +
+      "</button></div>";
+    if (s.verbosity) {
+      html += '<div class="dateline" style="margin-top:6px">Next prompt: ' + esc(s.verbosity) + " verbose</div>";
+    }
+    html += "</div>";
+    if (!s.round_hold) {
+      html += "<div>";
+      html += '<div class="kicker" style="color:var(--color-accent-700)">Call it early</div>';
+      html +=
+        '<div class="bar" style="background:var(--color-accent-2-200);margin-top:var(--space-2)"><i style="' +
+        esc(barFill("", callN, total, "background:var(--color-accent-2)")) +
+        '"></i></div>';
+      html += '<div class="dateline" style="margin-top:6px">' + callN + " of " + seatedCount() + " want to close it</div>";
+      html += '<div style="display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-2)">';
+      html +=
+        '<button type="button" class="btn btn-secondary" data-act="call-it"' +
+        (canVote() && s.phase === "debating" ? "" : " disabled") +
+        ">" +
+        (calledIt() ? "Withdraw my vote" : "I have heard enough") +
+        "</button>";
+      html +=
+        '<button type="button" class="btn btn-ghost" data-act="close"' +
+        (state.me.host && s.phase === "debating" ? "" : " disabled") +
+        ">Close it now</button></div></div>";
+    }
+    html += "<div>";
+    html += '<div class="kicker" style="color:var(--color-accent-2-700)">Kick</div>';
+    (s.kick_votes || []).forEach(function (row) {
+      html +=
+        '<div class="vote-row" style="grid-template-columns:1fr auto"><div>' +
+        esc(row.name) +
+        '<div class="dateline">' +
+        esc((row.votes || 0) + " of " + total) +
+        "</div></div>";
+      html +=
+        '<button type="button" class="' +
+        (kickMine(row) ? "btn btn-primary" : "btn btn-ghost") +
+        '" data-act="vote-kick" data-name="' +
+        esc(row.name) +
+        '"' +
+        (canVote() && s.phase === "debating" ? "" : " disabled") +
+        ">" +
+        (kickMine(row) ? "Voted" : "Kick") +
+        "</button></div>";
+    });
+    if (!(s.kick_votes || []).length) {
+      html += '<div class="dateline" style="margin-top:var(--space-2)">No agents on the card.</div>';
+    }
+    html += "</div>";
     html += "<div>";
     html += '<div class="kicker" style="color:var(--color-accent-700)">Put a question to ' + esc(speaker) + "</div>";
     html +=
@@ -1388,7 +1570,7 @@
     html += '<div class="dateline" style="margin-top:2px">Humans only — never sent to the agents</div>';
     html += '<div style="display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-3)">';
     heckles().forEach(function (k) {
-      html += "<div><span class=\"dateline\" style=\"color:var(--color-accent-2-700)\">" + esc(k.who) + "</span>";
+      html += '<div><span class="dateline" style="color:var(--color-accent-2-700)">' + esc(k.who) + "</span>";
       html += '<div class="heckle">' + esc(k.text) + "</div></div>";
     });
     html += "</div>";
@@ -1620,6 +1802,10 @@
           '<button type="button" class="btn btn-ghost" data-act="drop" data-name="' +
           esc(a.name) +
           '">Drop</button>';
+        html +=
+          '<button type="button" class="btn btn-ghost" data-act="rename" data-name="' +
+          esc(a.name) +
+          '">Rename</button>';
       }
       html += "</td></tr>";
     });
@@ -1643,7 +1829,7 @@
     html += "</div><div>" + pairingPanel() + "</div><div>";
     html += '<div class="kicker" style="color:var(--color-accent-2-700)">Seats</div>';
     html +=
-      '<p style="font-size:14px;line-height:1.6;margin-top:var(--space-2)">The token is the seat. Names are labels. Pairing is visible to everyone; skip, drop, and close belong to the host.</p>';
+      '<p style="font-size:14px;line-height:1.6;margin-top:var(--space-2)">The token is the seat. Names are labels. Pairing is visible to everyone; skip, drop, rename, and close belong to the host. Agents resume on the same name; wait is the ping.</p>';
     html += '<div style="margin-top:var(--space-2);display:flex;flex-direction:column;gap:var(--space-1)">';
     humans().forEach(function (h) {
       html +=
@@ -1703,7 +1889,7 @@
     }
     root.innerHTML =
       mast() +
-      '<div class="scroll" style="flex:1;padding:var(--space-6) var(--space-8) var(--space-8)">' +
+      '<div class="scroll" style="flex:1;min-height:0;padding:var(--space-4) var(--space-6) var(--space-6)">' +
       viewBody() +
       "</div>";
     scroller = root.querySelector(".scroll");
@@ -1750,6 +1936,9 @@
     else if (act === "vote-topic") voteTopic(id);
     else if (act === "vote-judge") voteJudge(id);
     else if (act === "call-it") callIt();
+    else if (act === "vote-round") voteRound(id);
+    else if (act === "vote-verbose") voteVerbose(id);
+    else if (act === "vote-kick") voteKick(name);
     else if (act === "close") closeNow();
     else if (act === "ask") ask();
     else if (act === "pair") pair();
@@ -1765,6 +1954,12 @@
     else if (act === "copy-park") copyText(parkCommand(), "Park command copied.");
     else if (act === "skip") hostAct("/api/host/skip", name);
     else if (act === "drop") hostAct("/api/host/drop", name);
+    else if (act === "rename") {
+      var next = window.prompt("Name on the card", name);
+      if (next && next.trim() && next.trim() !== name) {
+        hostAct("/api/host/rename", name, { to: next.trim() });
+      }
+    }
     else if (act === "download") downloadHistory();
     else if (act === "print") window.print();
     else if (act === "fold") toggleFold(id);

@@ -92,11 +92,16 @@ details[open] .notes-sum { color: color-mix(in srgb, var(--color-text) 70%, tran
 .meter { height: 2px; background: color-mix(in srgb, var(--color-text) 12%, transparent); position: relative; }
 .meter > i { position: absolute; inset: 0 auto 0 0; background: var(--color-accent-2); display: block; }
 .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-.shell { height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-text); }
+.shell { height: 100vh; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-text); overflow: hidden; }
 .err { color: var(--color-accent-2-700); font-size: 13px; margin-top: var(--space-2); }
+.split, .split-wide, .split-floor, .floor-page { min-width: 0; }
+.floor-page { max-width: 1100px; }
+.floor-aside .code { max-width: 100%; overflow-x: auto; }
+.floor-hold { padding: var(--space-3) 0; border-top: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent); }
+.turn-flow { max-width: 100%; }
 @media (max-width: 800px) {
   .split, .split-wide, .split-floor { grid-template-columns: 1fr !important; }
   .mast { padding: var(--space-3) var(--space-4) 0 !important; }
   .scroll { padding: var(--space-4) !important; }
-  .mast h1 { font-size: 32px !important; }
+  .mast h1 { font-size: 28px !important; }
 }

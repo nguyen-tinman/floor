@@ -16,6 +16,7 @@ from debate.prompts import JUDGE_BRIEF, judge_prompt, turn_prompt
 MAX_WAIT_S = 120.0
 TURN_LIMIT_S = 120.0
 JUDGE_LIMIT_S = 300.0
+STALE_S = 60.0
 SEATS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 PHASES = ("lobby", "debating", "judge_vote", "judging", "verdict", "expired")
 
@@ -26,6 +27,13 @@ def _now() -> float:
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _clean_agent_name(name: str) -> str:
+    cleaned = " ".join(name.split())
+    if not cleaned or len(cleaned) > 60:
+        raise FloorError("invalid", "agent name must be 1-60 characters")
+    return cleaned
 
 
 def _rel(ts: float, now: float) -> str:
@@ -50,6 +58,9 @@ class Agent:
     pending_wake: dict[str, Any] | None = None
     event: asyncio.Event = field(default_factory=asyncio.Event)
     dropped: bool = False
+    last_seen: float = 0.0
+    parked: bool = False
+    away: bool = False
 
 
 @dataclass
@@ -99,6 +110,11 @@ class Room:
         self.heckles: list[dict[str, str]] = []
         self.pending_question: str | None = None
         self.call_it_votes: set[str] = set()
+        self.round_hold = False
+        self.round_votes: dict[str, str] = {}
+        self.verbosity = ""
+        self.verbosity_votes: dict[str, str] = {}
+        self.kick_votes: dict[str, str] = {}
         self.judge_votes: dict[str, str] = {}
         self.judge_models: dict[str, str] = {}
         self.voted_judge: str | None = None
@@ -133,9 +149,7 @@ class Room:
         return human
 
     def register_agent(self, name: str, model: str, *, role: str = "agent") -> Agent:
-        cleaned = " ".join(name.split())
-        if not cleaned or len(cleaned) > 60:
-            raise FloorError("invalid", "agent name must be 1-60 characters")
+        cleaned = _clean_agent_name(name)
         model = (model or "").strip() or "unknown"
         if role not in {"agent", "judge"}:
             raise FloorError("invalid", "role must be agent or judge")
@@ -147,6 +161,7 @@ class Room:
             existing = self.agents.get(cleaned)
             if not existing or existing.model != model:
                 raise FloorError("ineligible", "only a seated agent can sit")
+            self._touch(existing)
             if existing.role != "judge":
                 existing.role = "judge"
                 existing.seat = "J"
@@ -154,14 +169,18 @@ class Room:
                 self._emit("room:update", self.snapshot())
             return existing
         if cleaned in self.agents and self.agents[cleaned].role == role:
-            return self.agents[cleaned]
+            agent = self.agents[cleaned]
+            self._touch(agent)
+            return agent
+        now = self._clock()
         seat = SEATS[len([a for a in self.agents.values() if a.role == "agent"]) % len(SEATS)]
         agent = Agent(
             name=cleaned,
             model=model,
             role=role,
             seat=seat if role == "agent" else "J",
-            joined_at=self._clock(),
+            joined_at=now,
+            last_seen=now,
         )
         self.agents[cleaned] = agent
         self._emit("player:joined", {"name": cleaned, "role": role, "model": model})
@@ -179,6 +198,11 @@ class Room:
             raise FloorError("invalid", "the motion is empty")
         topic = Topic(id=secrets.token_hex(4), text=cleaned, by=human.name)
         self.topics.append(topic)
+        for other in self.topics:
+            other.votes.discard(human.session_id)
+        topic.votes.add(human.session_id)
+        if self.phase == "lobby":
+            self._maybe_carry(topic)
         self._emit("room:update", self.snapshot())
         return self._topic_public(topic)
 
@@ -204,6 +228,7 @@ class Room:
         cleaned = text.strip()
         if not cleaned:
             raise FloorError("invalid", "empty statement")
+        self._touch(agent)
         if self.turn_started is not None:
             agent.turnarounds.append(self._clock() - self.turn_started)
         self.lines.append(
@@ -226,6 +251,7 @@ class Room:
         self._emit("chat:message", self.history()[-1])
         if nxt:
             self._push(nxt, "your_turn")
+        self._emit("room:update", self.snapshot())
         return envelope_line(self.lines[-1])
 
     def heckle(self, session_id: str, text: str) -> None:
@@ -259,6 +285,51 @@ class Room:
         if not human.host:
             raise FloorError("forbidden", "only the host can close it now")
         self._to_judge_vote()
+        self._emit("room:update", self.snapshot())
+        return self.snapshot()
+
+    def vote_round(self, session_id: str, choice: str) -> dict[str, Any]:
+        if self.phase != "debating" or not self.round_hold:
+            raise FloorError("unavailable", "the round is still open")
+        picked = str(choice or "").strip().lower()
+        if picked not in {"advance", "close"}:
+            raise FloorError("invalid", "vote advance or close")
+        human = self._voter(session_id)
+        self.round_votes[human.session_id] = picked
+        self._maybe_resolve_round()
+        self._emit("room:update", self.snapshot())
+        return self.snapshot()
+
+    def vote_verbosity(self, session_id: str, choice: str) -> dict[str, Any]:
+        if self.phase != "debating":
+            raise FloorError("unavailable", "the floor is not open")
+        picked = str(choice or "").strip().lower()
+        if picked not in {"more", "less"}:
+            raise FloorError("invalid", "vote more or less")
+        human = self._voter(session_id)
+        self.verbosity_votes[human.session_id] = picked
+        self.seq += 1
+        self._emit("room:update", self.snapshot())
+        return self.snapshot()
+
+    def vote_kick(self, session_id: str, name: str) -> dict[str, Any]:
+        if self.phase != "debating":
+            raise FloorError("unavailable", "the floor is not open")
+        human = self._voter(session_id)
+        agent = self._agent(_clean_agent_name(name))
+        if agent.dropped or agent.role != "agent":
+            raise FloorError("invalid", "that agent is not on the card")
+        if self.kick_votes.get(human.session_id) == agent.name:
+            self.kick_votes.pop(human.session_id, None)
+        else:
+            self.kick_votes[human.session_id] = agent.name
+        n = sum(1 for voted in self.kick_votes.values() if voted == agent.name)
+        if self._majority(n):
+            self.kick_votes = {
+                sid: voted for sid, voted in self.kick_votes.items() if voted != agent.name
+            }
+            self.drop(agent.name)
+        self.seq += 1
         self._emit("room:update", self.snapshot())
         return self.snapshot()
 
@@ -310,6 +381,7 @@ class Room:
         lows: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         agent = self._agent(name)
+        self._touch(agent)
         if agent.role != "judge" or self.phase != "judging":
             raise FloorError("forbidden", "only the sitting bench can verdict")
         if self._was_debater(agent) and agent.name in {winner, runner_up, honorable}:
@@ -350,12 +422,14 @@ class Room:
 
     async def wait(self, name: str, timeout_s: float = 30.0) -> dict[str, Any]:
         agent = self._agent(name)
+        self._touch(agent)
         if agent.pending_wake:
             wake = agent.pending_wake
             agent.pending_wake = None
             return wake
         wait = max(0.0, min(float(timeout_s), MAX_WAIT_S))
         agent.event.clear()
+        agent.parked = True
         try:
             await asyncio.wait_for(agent.event.wait(), wait)
         except TimeoutError:
@@ -368,12 +442,16 @@ class Room:
                 "prompt": "",
                 "history": self._history_for(agent),
             }
-        wake = agent.pending_wake or self._wake(name, "info")
+        finally:
+            agent.parked = False
+            self._touch(agent)
+        wake = agent.pending_wake or self._wake(agent.name, "info")
         agent.pending_wake = None
         return wake
 
     def pull(self, name: str) -> dict[str, Any]:
         agent = self._agent(name)
+        self._touch(agent)
         snap = self.snapshot()
         snap.pop("heckles", None)
         snap.update({"ok": True, "you": agent.name, "history": self._history_for(agent)})
@@ -410,12 +488,55 @@ class Room:
             nxt = self._advance()
             if nxt:
                 self._push(nxt, "your_turn")
+            self._emit("room:update", self.snapshot())
 
     def drop(self, name: str) -> None:
         agent = self._agent(name)
         agent.dropped = True
         if self.speaker == name:
             self.skip(name)
+        else:
+            self._emit("room:update", self.snapshot())
+
+    def rename_agent(self, session_id: str, name: str, to: str) -> dict[str, Any]:
+        human = self.require_human(session_id)
+        if not human.host:
+            raise FloorError("forbidden", "only the host can rename an agent")
+        old = _clean_agent_name(name)
+        new = _clean_agent_name(to)
+        agent = self._agent(old)
+        if new == old:
+            return self.snapshot()
+        if new in self.agents:
+            raise FloorError("invalid", f"{new!r} is already seated")
+        self.agents.pop(old)
+        agent.name = new
+        self.agents[new] = agent
+        self.order = [new if item == old else item for item in self.order]
+        if self.speaker == old:
+            self.speaker = new
+        if self.opener == old:
+            self.opener = new
+        if self._sitting_from_floor == old:
+            self._sitting_from_floor = new
+        self.kick_votes = {sid: new if voted == old else voted for sid, voted in self.kick_votes.items()}
+        for line in self.lines:
+            if line.speaker == old:
+                line.speaker = new
+        if self.verdict:
+            for key in ("winner", "runner_up", "honorable", "judge"):
+                if self.verdict.get(key) == old:
+                    self.verdict[key] = new
+            for group in ("highs", "lows"):
+                for cite in self.verdict.get(group) or []:
+                    if cite.get("speaker") == old:
+                        cite["speaker"] = new
+        if agent.pending_wake and isinstance(agent.pending_wake.get("you"), dict):
+            agent.pending_wake["you"]["name"] = new
+        self.seq += 1
+        self._emit("agent:renamed", {"from": old, "to": new})
+        self._emit("room:update", self.snapshot())
+        return self.snapshot()
 
     def reopen_bench(self) -> None:
         if self.phase != "judging":
@@ -437,6 +558,7 @@ class Room:
         self._emit("room:update", self.snapshot())
 
     def check_timeouts(self) -> None:
+        self._check_presence()
         if self.phase == "judging":
             if self.turn_started is not None and self._clock() - self.turn_started >= JUDGE_LIMIT_S:
                 self.reopen_bench()
@@ -477,6 +599,11 @@ class Room:
             "call_it_names": [
                 h.name for h in self.humans() if h.session_id in self.call_it_votes
             ],
+            "round_hold": self.round_hold,
+            "round_vote": self._choice_board(self.round_votes, ("advance", "close")),
+            "verbosity": self.verbosity,
+            "verbosity_vote": self._choice_board(self.verbosity_votes, ("more", "less")),
+            "kick_votes": self._kick_public(),
             "judges": self._judge_options(),
             "verdict": self.verdict,
             "tunnel_url": self.tunnel_url,
@@ -492,11 +619,17 @@ class Room:
             return
         ready = [a for a in self.agents.values() if a.role == "agent" and not a.dropped]
         if not ready:
-            raise FloorError("unavailable", "no agent is seated")
+            return
         pick = ready[self._rng(len(ready)) % len(ready)]
         self.topic = topic
         self.phase = "debating"
         self.round = 1
+        self.round_hold = False
+        self.round_votes = {}
+        self.verbosity = ""
+        self.verbosity_votes = {}
+        self.kick_votes = {}
+        self.call_it_votes = set()
         self.opener = pick.name
         self.order = [a.name for a in ready]
         start = self.order.index(pick.name)
@@ -510,22 +643,70 @@ class Room:
         live = [n for n in self.order if n in self.agents and not self.agents[n].dropped]
         if not live:
             self.speaker = None
+            self.turn_started = None
             return None
         if self.speaker not in live:
             self.speaker = live[0]
-        else:
-            idx = (live.index(self.speaker) + 1) % len(live)
-            if idx == 0:
-                self.round += 1
-            self.speaker = live[idx]
+            self.turn_started = self._clock()
+            return self.speaker
+        idx = (live.index(self.speaker) + 1) % len(live)
+        if idx == 0:
+            self.round += 1
+            self.speaker = None
+            self.turn_started = None
+            self.round_hold = True
+            self.round_votes = {}
+            return None
+        self.speaker = live[idx]
         self.turn_started = self._clock()
         return self.speaker
+
+    def _maybe_resolve_round(self) -> None:
+        if not self.round_hold or self.phase != "debating":
+            return
+        seated = {h.session_id for h in self._seated()}
+        if not seated:
+            return
+        cast = {sid: choice for sid, choice in self.round_votes.items() if sid in seated}
+        if set(cast) < seated:
+            return
+        closes = sum(1 for choice in cast.values() if choice == "close")
+        advances = sum(1 for choice in cast.values() if choice == "advance")
+        if closes > advances:
+            self.round_hold = False
+            self._to_judge_vote()
+            return
+        self._resume_next_round()
+
+    def _resume_next_round(self) -> None:
+        self.verbosity = self._tally_verbosity()
+        self.round_hold = False
+        self.round_votes = {}
+        live = [n for n in self.order if n in self.agents and not self.agents[n].dropped]
+        if not live:
+            self.speaker = None
+            self.turn_started = None
+            return
+        self.speaker = live[0]
+        self.turn_started = self._clock()
+        self.seq += 1
+        self._push(self.speaker, "your_turn")
+
+    def _tally_verbosity(self) -> str:
+        more = sum(1 for choice in self.verbosity_votes.values() if choice == "more")
+        less = sum(1 for choice in self.verbosity_votes.values() if choice == "less")
+        if more > less:
+            return "more"
+        if less > more:
+            return "less"
+        return self.verbosity
 
     def _to_judge_vote(self) -> None:
         if self.phase not in {"debating", "lobby"}:
             return
         self.phase = "judge_vote"
         self.speaker = None
+        self.round_hold = False
         self.seq += 1
         for agent in self.agents.values():
             if agent.role == "agent":
@@ -549,6 +730,7 @@ class Room:
                 speaker=name,
                 opponents=opponents,
                 question=question,
+                verbosity=self.verbosity,
             )
         elif kind == "judge":
             prompt = judge_prompt(
@@ -581,11 +763,54 @@ class Room:
             raise FloorError("not_registered", f"unknown agent {name!r}")
         return agent
 
+    def _seated(self) -> list[HumanSession]:
+        return [h for h in self.humans() if not h.watcher]
+
     def _majority(self, votes: int) -> bool:
-        n = len([h for h in self.humans() if not h.watcher])
+        n = len(self._seated())
         if n == 0:
             return False
         return votes > n / 2
+
+    def _choice_board(self, votes: dict[str, str], options: tuple[str, ...]) -> dict[str, Any]:
+        seated = self._seated()
+        seated_ids = {h.session_id for h in seated}
+        counts = {opt: 0 for opt in options}
+        names = {opt: [] for opt in options}
+        choices: dict[str, str] = {}
+        for sid, choice in votes.items():
+            if sid not in seated_ids or choice not in counts:
+                continue
+            counts[choice] += 1
+            choices[sid] = choice
+            human = next((h for h in seated if h.session_id == sid), None)
+            if human:
+                names[choice].append(human.name)
+        return {
+            "counts": counts,
+            "names": names,
+            "choices": choices,
+            "voters": list(choices),
+            "voted": len(choices),
+            "needed": len(seated),
+        }
+
+    def _kick_public(self) -> list[dict[str, Any]]:
+        seated = self._seated()
+        out = []
+        for agent in self.agents.values():
+            if agent.role != "agent" or agent.dropped:
+                continue
+            voters = [sid for sid, voted in self.kick_votes.items() if voted == agent.name]
+            out.append(
+                {
+                    "name": agent.name,
+                    "votes": len(voters),
+                    "voters": voters,
+                    "bar": _bar(len(voters), len(seated)),
+                }
+            )
+        return out
 
     def _cites(self, raw: list[dict[str, Any]] | None) -> list[dict[str, str]]:
         by_id = {str(line.id): line for line in self.lines}
@@ -641,14 +866,15 @@ class Room:
                 "votes": 0,
             }
         counts: dict[str, int] = {}
-        mine: dict[str, bool] = {}
+        voters: dict[str, list[str]] = {}
         for sid, model in self.judge_votes.items():
             counts[model] = counts.get(model, 0) + 1
-            mine[model] = True
+            voters.setdefault(model, []).append(sid)
         out = []
         for item in seen.values():
             item["votes"] = counts.get(item["model"], 0)
-            item["mine"] = item["model"] in mine
+            item["voters"] = voters.get(item["model"], [])
+            item["mine"] = False
             item["bar"] = _bar(item["votes"], len(seated))
             out.append(item)
         return out
@@ -664,20 +890,86 @@ class Room:
             "voters": list(topic.votes),
         }
 
+    def _touch(self, agent: Agent) -> None:
+        agent.last_seen = self._clock()
+        agent.away = False
+
+    def _live(self, agent: Agent, now: float | None = None) -> bool:
+        now = self._clock() if now is None else now
+        if agent.dropped:
+            return False
+        if agent.parked:
+            return True
+        if self.phase == "debating" and self.speaker == agent.name:
+            return True
+        if self.phase == "judging" and agent.role == "judge":
+            return True
+        return (now - agent.last_seen) < STALE_S
+
+    def _check_presence(self) -> None:
+        now = self._clock()
+        became_away: list[str] = []
+        became_live = False
+        for agent in self.agents.values():
+            live = self._live(agent, now)
+            was_away = agent.away
+            agent.away = not live
+            if agent.away and not was_away:
+                became_away.append(agent.name)
+            elif live and was_away:
+                became_live = True
+        if not became_away and not became_live:
+            return
+        if self.phase == "judging" and self._sitting_from_floor in became_away:
+            self.reopen_bench()
+            return
+        if self.phase == "debating" and self.speaker in became_away:
+            self._skip_until_live()
+        self._emit("room:update", self.snapshot())
+
+    def _skip_until_live(self) -> None:
+        if self.phase != "debating" or self.round_hold or not self.speaker:
+            return
+        start = self.speaker
+        for _ in range(len(self.order) + 1):
+            agent = self.agents.get(self.speaker)
+            if agent and self._live(agent) and not agent.dropped:
+                if self.speaker != start:
+                    self._push(self.speaker, "your_turn")
+                return
+            nxt = self._advance()
+            if not nxt:
+                return
+
     def _agent_public(self, agent: Agent, now: float) -> dict[str, Any]:
         if agent.dropped:
             status = "idle"
+        elif not self._live(agent, now):
+            status = "away"
         elif self.phase == "debating" and self.speaker == agent.name:
             status = "floor"
         elif self.phase == "lobby" and agent.turns == 0:
             status = "ready"
-        elif agent.turns == 0 and self.phase == "lobby":
-            status = "idle"
         else:
-            status = "ready" if not agent.dropped else "idle"
-        labels = {"floor": "On the floor", "ready": "Waiting", "idle": "Not seated"}
-        tags = {"floor": "tag tag-accent", "ready": "tag tag-neutral", "idle": "tag tag-outline"}
-        seats = {"floor": "seat now", "ready": "seat", "idle": "seat idle"}
+            status = "ready"
+        labels = {
+            "floor": "On the floor",
+            "ready": "Waiting",
+            "idle": "Not seated",
+            "away": "Away",
+        }
+        tags = {
+            "floor": "tag tag-accent",
+            "ready": "tag tag-neutral",
+            "idle": "tag tag-outline",
+            "away": "tag tag-outline",
+        }
+        seats = {
+            "floor": "seat now",
+            "ready": "seat",
+            "idle": "seat idle",
+            "away": "seat idle",
+        }
         avg = "—"
         if agent.turnarounds:
             mean = sum(agent.turnarounds) / len(agent.turnarounds)
@@ -690,6 +982,7 @@ class Room:
             "turns": agent.turns,
             "status": status,
             "statusLabel": labels[status],
+            "connected": self._live(agent, now),
             "tagClass": tags[status],
             "seatClass": seats[status],
             "lastPush": _rel(agent.last_push, now) if agent.last_push else "—",
@@ -699,6 +992,19 @@ class Room:
     def _order_public(self) -> list[dict[str, str]]:
         out = []
         if not self.order or self.phase != "debating":
+            return out
+        if self.round_hold:
+            for name in self.order:
+                if name not in self.agents or self.agents[name].dropped:
+                    continue
+                out.append(
+                    {
+                        "name": name,
+                        "state": "spoke",
+                        "flowClass": "flow done",
+                        "seatClass": "seat spoken",
+                    }
+                )
             return out
         hit_speaker = False
         for name in self.order:

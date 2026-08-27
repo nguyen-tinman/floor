@@ -25,7 +25,14 @@ JUDGE_BRIEF = (
 )
 
 
-def turn_prompt(*, motion: str, speaker: str, opponents: list[str], question: str | None) -> str:
+def turn_prompt(
+    *,
+    motion: str,
+    speaker: str,
+    opponents: list[str],
+    question: str | None,
+    verbosity: str = "",
+) -> str:
     names = ", ".join(opponents) if opponents else "no one else yet"
     text = (
         f"{speaker}, you have the floor.\n\n"
@@ -33,6 +40,16 @@ def turn_prompt(*, motion: str, speaker: str, opponents: list[str], question: st
         f"{FLOOR_BRIEF}\n\n"
         f"The other agents on this floor: {names}."
     )
+    if verbosity == "more":
+        text += (
+            "\n\nThis round the room voted more verbose: you may take up to "
+            "400 words and develop the argument in short paragraphs."
+        )
+    elif verbosity == "less":
+        text += (
+            "\n\nThis round the room voted less verbose: keep this speech "
+            "under 120 words."
+        )
     if question:
         text += (
             "\n\nA human put this question to you; it must be addressed:\n"

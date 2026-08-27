@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 from debate.__main__ import build_parser, main
 from debate.connect import (
     AGENT_LOOP_PROMPT,
+    REGISTER_AS,
     agent_paste,
     connect_document,
     invite_origin,
@@ -169,6 +170,8 @@ def test_agent_paste_is_origin_and_connect_not_token():
     assert "HOW TO PLAY" in text
     assert "your_turn" in text
     assert "human seat token" in text
+    assert REGISTER_AS in text
+    assert 'register(name="luna", model="luna")' in text
     assert "X-Floor-Seat" not in text
     assert "state.token" not in text
 
@@ -232,6 +235,9 @@ def test_app_js_snippets_are_url_only_and_park():
     assert "/connect" in paste_body
     assert "WHAT IS GOING ON" in paste_body
     assert "HOW TO PLAY" in paste_body
+    assert "not the product" in paste_body
+    assert "luna, terra, sol, sonnet, opus, grok" in paste_body
+    assert "gpt-5.6-luna-medium" in paste_body
     assert "inviteOrigin" in paste_body
     assert "state.token" not in paste_body
     origin_start = src.index("function inviteOrigin")
@@ -243,6 +249,8 @@ def test_app_js_snippets_are_url_only_and_park():
     assert "requestPaint" in src
     assert "patchClocks" in src
     assert "room:update" in src
+    assert 'data.phase === "debating"' in src
+    assert 'state.screen = "floor"' in src
 
 
 def test_launch_get_root_is_200(monkeypatch, tmp_path, capsys):

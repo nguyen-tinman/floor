@@ -114,3 +114,11 @@ async def test_submit_verdict_tool_accepts_a_reason_for_each_plate():
     assert "runner_reason" in props
     assert "honorable_reason" in props
     assert "summary" in props
+
+
+def test_rename_rebounds_bound_session():
+    room, vale = _seated(("claude", "claude"))
+    tools = FloorMcp(room)
+    tools.bind("sess", "claude")
+    room.rename_agent(vale.session_id, "claude", "sonnet")
+    assert tools.who("sess") == "sonnet"

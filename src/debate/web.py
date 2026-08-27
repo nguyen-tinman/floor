@@ -225,6 +225,30 @@ def build_app(
         except FloorError as exc:
             return JSONResponse(envelope_err(exc), 400)
 
+    async def round_vote(request: Request) -> Response:
+        try:
+            human = _human(room, request)
+            body = await request.json()
+            return JSONResponse(room.vote_round(human.session_id, str(body.get("choice") or "")))
+        except FloorError as exc:
+            return JSONResponse(envelope_err(exc), 400)
+
+    async def verbosity_vote(request: Request) -> Response:
+        try:
+            human = _human(room, request)
+            body = await request.json()
+            return JSONResponse(room.vote_verbosity(human.session_id, str(body.get("choice") or "")))
+        except FloorError as exc:
+            return JSONResponse(envelope_err(exc), 400)
+
+    async def kick_vote(request: Request) -> Response:
+        try:
+            human = _human(room, request)
+            body = await request.json()
+            return JSONResponse(room.vote_kick(human.session_id, str(body.get("name") or "")))
+        except FloorError as exc:
+            return JSONResponse(envelope_err(exc), 400)
+
     async def judge_votes(request: Request) -> Response:
         try:
             human = _human(room, request)
@@ -281,6 +305,19 @@ def build_app(
             body = await request.json()
             room.drop(str(body.get("name") or ""))
             return JSONResponse(room.snapshot())
+        except FloorError as exc:
+            return JSONResponse(envelope_err(exc), 400)
+
+    async def host_rename(request: Request) -> Response:
+        try:
+            human = _human(room, request)
+            body = await request.json()
+            snap = room.rename_agent(
+                human.session_id,
+                str(body.get("name") or ""),
+                str(body.get("to") or ""),
+            )
+            return JSONResponse(snap)
         except FloorError as exc:
             return JSONResponse(envelope_err(exc), 400)
 
@@ -430,12 +467,16 @@ def build_app(
         Route("/api/votes", votes, methods=["POST"]),
         Route("/api/call-vote", call_vote, methods=["POST"]),
         Route("/api/close", close_now, methods=["POST"]),
+        Route("/api/round-vote", round_vote, methods=["POST"]),
+        Route("/api/verbosity", verbosity_vote, methods=["POST"]),
+        Route("/api/kick", kick_vote, methods=["POST"]),
         Route("/api/judge-votes", judge_votes, methods=["POST"]),
         Route("/api/heckle", heckle, methods=["POST"]),
         Route("/api/ask", ask, methods=["POST"]),
         Route("/api/pair", pair, methods=["POST"]),
         Route("/api/host/skip", host_skip, methods=["POST"]),
         Route("/api/host/drop", host_drop, methods=["POST"]),
+        Route("/api/host/rename", host_rename, methods=["POST"]),
         Route("/api/agent/register", agent_register, methods=["POST"]),
         Route("/api/agent/wait", agent_wait, methods=["POST"]),
         Route("/api/agent/pull", agent_pull, methods=["POST"]),

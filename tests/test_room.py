@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from debate.errors import FloorError
-from debate.room import JUDGE_LIMIT_S, TURN_LIMIT_S, Room
+from debate.room import JUDGE_LIMIT_S, STALE_S, TURN_LIMIT_S, Room
 
 PAIR_CODE_TTL_S = 240
 
@@ -41,8 +41,15 @@ def test_majority_carries_motion_and_picks_opener():
 def test_one_human_vote_is_a_majority():
     room, (vale,) = _room(("Vale", "1.1.1.1"), agents=(("Grok", "grok"),))
     motion = room.propose_topic(vale.session_id, "Resolved: wrappers are costumes.")
-    room.vote_topic(vale.session_id, motion["id"])
+    assert motion["votes"] == 1
     assert room.snapshot()["phase"] == "debating"
+
+
+def test_propose_without_agents_stays_in_lobby():
+    room, (vale,) = _room(("Vale", "1.1.1.1"))
+    motion = room.propose_topic(vale.session_id, "The motion is ready.")
+    assert motion["votes"] == 1
+    assert room.snapshot()["phase"] == "lobby"
 
 
 def test_round_robin_advances_after_send():
@@ -364,8 +371,14 @@ def test_same_name_reregister_is_not_a_second_speaker():
     room.send_message("Claude", "Opening.")
     assert room.speaker == "Grok"
     room.send_message("Grok", "Reply.")
-    assert room.speaker == "Claude"
-    assert [o["name"] for o in room.snapshot()["order"]].count("Claude") == 1
+    held = room.snapshot()
+    assert held["round_hold"] is True
+    assert held["speaker"] is None
+    vale = room.humans()[0]
+    snap = room.vote_round(vale.session_id, "advance")
+    assert snap["round_hold"] is False
+    assert snap["speaker"] == "Claude"
+    assert [o["name"] for o in snap["order"]].count("Claude") == 1
 
 
 def test_timeout_after_late_join_advances_to_late_joiner():
@@ -391,3 +404,133 @@ def test_register_agent_emits_room_update():
     room.register_agent("Grok", "grok")
     assert "player:joined" in events
     assert "room:update" in events
+
+
+def test_host_renames_agent_and_rewrites_the_card():
+    room, (vale, bram) = _room(
+        ("Vale", "1.1.1.1"),
+        ("Bram", "2.2.2.2"),
+        agents=(("claude", "claude"), ("grok", "grok")),
+    )
+    motion = room.propose_topic(vale.session_id, "Resolved: a")
+    room.vote_topic(vale.session_id, motion["id"])
+    room.vote_topic(bram.session_id, motion["id"])
+    room.send_message("claude", "Opening.")
+    snap = room.rename_agent(vale.session_id, "claude", "sonnet")
+    assert "claude" not in room.agents
+    assert room.agents["sonnet"].model == "claude"
+    assert snap["opener"] == "sonnet"
+    assert [line["speaker"] for line in snap["history"]] == ["sonnet"]
+    assert [item["name"] for item in snap["order"]].count("sonnet") == 1
+    with pytest.raises(FloorError) as err:
+        room.rename_agent(bram.session_id, "sonnet", "opus")
+    assert err.value.code == "forbidden"
+    with pytest.raises(FloorError) as err:
+        room.rename_agent(vale.session_id, "sonnet", "grok")
+    assert err.value.code == "invalid"
+
+
+def test_same_name_register_resumes_and_clears_away():
+    now = [1_000.0]
+    room, (vale,) = _room(
+        ("Vale", "1.1.1.1"),
+        agents=(("luna", "luna"),),
+        clock=lambda: now[0],
+    )
+    now[0] = 1_000.0 + STALE_S
+    room.check_timeouts()
+    assert room.agents["luna"].away is True
+    card = next(a for a in room.snapshot()["agents"] if a["name"] == "luna")
+    assert card["status"] == "away"
+    assert card["connected"] is False
+    again = room.register_agent("luna", "luna")
+    assert again is room.agents["luna"]
+    assert again.away is False
+    assert room.snapshot()["agents"][0]["connected"] is True
+
+
+@pytest.mark.asyncio
+async def test_parked_wait_is_not_away():
+    now = [1_000.0]
+    room, (vale,) = _room(
+        ("Vale", "1.1.1.1"),
+        agents=(("sol", "sol"), ("luna", "luna")),
+        clock=lambda: now[0],
+    )
+    motion = room.propose_topic(vale.session_id, "Resolved: a")
+    room.vote_topic(vale.session_id, motion["id"])
+    assert room.speaker == "sol"
+    pending = asyncio.create_task(room.wait("luna", timeout_s=5))
+    await asyncio.sleep(0)
+    assert room.agents["luna"].parked is True
+    now[0] = 1_000.0 + STALE_S + 10
+    room.check_timeouts()
+    assert room.agents["luna"].away is False
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+
+def test_full_round_pauses_until_everyone_votes_advance():
+    room, (vale, bram) = _room(
+        ("Vale", "1.1.1.1"),
+        ("Bram", "2.2.2.2"),
+        agents=(("sol", "sol"), ("luna", "luna")),
+    )
+    motion = room.propose_topic(vale.session_id, "The motion is capacity.")
+    room.vote_topic(vale.session_id, motion["id"])
+    room.vote_topic(bram.session_id, motion["id"])
+    room.send_message("sol", "Opening.")
+    room.send_message("luna", "Answer.")
+    held = room.snapshot()
+    assert held["round_hold"] is True
+    assert held["speaker"] is None
+    assert held["round"] == 2
+    room.vote_verbosity(vale.session_id, "more")
+    room.vote_verbosity(bram.session_id, "more")
+    room.vote_round(vale.session_id, "advance")
+    still = room.snapshot()
+    assert still["round_hold"] is True
+    assert still["speaker"] is None
+    snap = room.vote_round(bram.session_id, "advance")
+    assert snap["round_hold"] is False
+    assert snap["speaker"] == "sol"
+    assert snap["verbosity"] == "more"
+    wake = room.peek_wake("sol")
+    assert wake["kind"] == "your_turn"
+    assert "more verbose" in wake["prompt"]
+    assert "400" in wake["prompt"]
+
+
+def test_round_close_votes_move_to_judge():
+    room, (vale, bram) = _room(
+        ("Vale", "1.1.1.1"),
+        ("Bram", "2.2.2.2"),
+        agents=(("sol", "sol"), ("luna", "luna")),
+    )
+    motion = room.propose_topic(vale.session_id, "The motion is capacity.")
+    room.vote_topic(vale.session_id, motion["id"])
+    room.vote_topic(bram.session_id, motion["id"])
+    room.send_message("sol", "Opening.")
+    room.send_message("luna", "Answer.")
+    room.vote_round(vale.session_id, "close")
+    assert room.snapshot()["phase"] == "debating"
+    snap = room.vote_round(bram.session_id, "close")
+    assert snap["phase"] == "judge_vote"
+    assert snap["round_hold"] is False
+
+
+def test_kick_majority_drops_agent():
+    room, (vale, bram) = _room(
+        ("Vale", "1.1.1.1"),
+        ("Bram", "2.2.2.2"),
+        agents=(("sol", "sol"), ("luna", "luna")),
+    )
+    motion = room.propose_topic(vale.session_id, "The motion is capacity.")
+    room.vote_topic(vale.session_id, motion["id"])
+    room.vote_topic(bram.session_id, motion["id"])
+    room.vote_kick(vale.session_id, "luna")
+    assert room.agents["luna"].dropped is False
+    snap = room.vote_kick(bram.session_id, "luna")
+    assert room.agents["luna"].dropped is True
+    assert all(row["name"] != "luna" for row in snap["kick_votes"])

@@ -253,6 +253,69 @@ def test_connect_document_is_public_and_has_agent_urls():
     assert "on the floor of a debate" in body["brief"]
 
 
+def test_host_rename_http_rebinding_keeps_wait_token():
+    room = _room()
+    app = _app(room)
+    with TestClient(app) as client:
+        vale = client.post("/api/join", json={"name": "Vale"}).json()
+        guest = client.post("/api/join", json={"name": "Bram"}).json()
+        seated = client.post("/api/agent/register", json={"name": "claude", "model": "claude"}).json()
+        assert seated["ok"] is True
+        denied = client.post(
+            "/api/host/rename",
+            json={"name": "claude", "to": "sonnet"},
+            headers=_auth(guest["token"]),
+        )
+        assert denied.status_code == 400
+        assert denied.json()["error"]["code"] == "forbidden"
+        renamed = client.post(
+            "/api/host/rename",
+            json={"name": "claude", "to": "sonnet"},
+            headers=_auth(vale["token"]),
+        ).json()
+        assert renamed["ok"] is True
+        assert any(a["name"] == "sonnet" for a in renamed["agents"])
+        pulled = client.post("/api/agent/pull", headers=_auth(seated["token"])).json()
+        assert pulled["ok"] is True
+        assert pulled["you"] == "sonnet"
+
+
+def test_floor_votes_http_round_verbosity_and_kick():
+    room = _room()
+    app = _app(room)
+    with TestClient(app) as client:
+        vale = client.post("/api/join", json={"name": "Vale"}).json()
+        bram = client.post("/api/join", json={"name": "Bram"}).json()
+        client.post("/api/agent/register", json={"name": "sol", "model": "sol"})
+        client.post("/api/agent/register", json={"name": "luna", "model": "luna"})
+        motion = client.post(
+            "/api/topics",
+            json={"text": "The motion is capacity."},
+            headers=_auth(vale["token"]),
+        ).json()
+        client.post("/api/votes", json={"topic_id": motion["id"]}, headers=_auth(bram["token"]))
+        too_soon = client.post(
+            "/api/round-vote",
+            json={"choice": "advance"},
+            headers=_auth(vale["token"]),
+        )
+        assert too_soon.status_code == 400
+        verbose = client.post(
+            "/api/verbosity",
+            json={"choice": "less"},
+            headers=_auth(vale["token"]),
+        ).json()
+        assert verbose["ok"] is True
+        assert verbose["verbosity_vote"]["counts"]["less"] == 1
+        kick = client.post(
+            "/api/kick",
+            json={"name": "luna"},
+            headers=_auth(vale["token"]),
+        ).json()
+        assert kick["ok"] is True
+        assert any(row["name"] == "luna" and row["votes"] == 1 for row in kick["kick_votes"])
+
+
 def test_connect_document_uses_tunnel_on_localhost():
     room = _room()
     room.tunnel_url = "https://orchid-4471.trycloudflare.com"
